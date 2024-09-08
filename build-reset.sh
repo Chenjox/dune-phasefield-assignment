@@ -5,8 +5,8 @@ cd ..
 # Löschen des build-cmake-verzeichnisses
 dunecontrol exec "rm -r build-cmake"
 # führen dunecontrol aus mit den argumenten hier
-dunecontrol --opts=biw4-07/debug.opts all
-cd biw4-07
+dunecontrol --opts=biw4-67-phasefield/debug.opts all
+cd biw4-67-phasefield
 
 
 [ -f "compile_commands.json" ] && rm "compile_commands.json"

@@ -1,0 +1,9 @@
+CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS='-std=c++17 \
+                            -Wall \
+                            -Wno-deprecated-declarations \
+                            -Wno-unused-variable \
+                            -Wno-unused-but-set-variable \
+                    -Wno-unused-local-typedefs -O3' \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=1 "
+MAKE_FLAGS="-j 2"
