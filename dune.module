@@ -1,0 +1,12 @@
+################################
+# Dune module information file #
+################################
+
+# Name of the module
+Module: biw4-67-phasefield
+Version: 0.1
+Maintainer: jochen.diepelt@mailbox.tu-dresden.de
+# Required build dependencies
+Depends: dune-common dune-typetree dune-uggrid dune-grid dune-localfunctions dune-istl dune-functions dune-alugrid dune-vtk dune-curvedgeometry dune-curvedgrid dune-gmsh4
+# Optional build dependencies
+#Suggests:

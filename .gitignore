@@ -1,0 +1,15 @@
+# build directories
+/build*/
+
+# editor backup files
+*~
+
+# Geometry data
+*.geo
+
+compile_commands.json
+
+# Result data
+*.vtu
+
+.cache
