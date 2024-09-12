@@ -1,3 +1,5 @@
+#include "dune/biw4-67-phasefield/biw4-67-phasefield.hh"
+#include "dune/istl/bvector.hh"
 #include <config.h>
 
 #include <array>
@@ -25,96 +27,177 @@
 #include <vector>
 using namespace Dune;
 
-// Compute the stiffness matrix for a single element
-// { local_assembler_signature_begin }
-template <class LocalView>
-void assembleElementStiffnessMatrix(const LocalView &localView,
-                                    Matrix<double> &elementMatrix)
-// { local_assembler_signature_end }
-{
-  // Get the grid element from the local FE basis view
-  // { local_assembler_get_element_information_begin }
+template <class LocalView, class LocalDispFunctionView,
+          class LocalPhaseFunctionView, class Material>
+void assembleElementStiffnessMatrix(
+    const LocalView &localView, //
+    const LocalDispFunctionView &localDispFunction, //
+    const LocalPhaseFunctionView &localPhaseFunction, //
+    Matrix<double> &elementMatrix, //
+    const Material &material
+    ) {
+
   using Element = typename LocalView::Element;
   const Element element = localView.element();
   constexpr int dim = Element::dimension;
   auto geometry = element.geometry();
-  // { local_assembler_get_element_information_end }
-  // Set all matrix entries to zero
-  // { initialize_element_matrix_begin }
+
   elementMatrix.setSize(localView.size(), localView.size());
   elementMatrix = 0;
-  // Fills the entire matrix with zeros
-  // { initialize_element_matrix_end }
-  // Get set of shape functions for this element
-  // { get_local_fe_begin }
+
   using namespace Indices;
-  const auto &velocityLocalFiniteElement =
+  const auto &displacementLocalFiniteElement =
       localView.tree().child(_0, 0).finiteElement();
-  const auto &pressureLocalFiniteElement =
+  const auto &phasefieldLocalFiniteElement =
       localView.tree().child(_1).finiteElement();
-  // { get_local_fe_end }
-  // Get a quadrature rule
-  // { begin_quad_loop_begin }
-  int order = 2 * (dim * velocityLocalFiniteElement.localBasis().order() - 1);
+  auto num_nodes = displacementLocalFiniteElement.localBasis().size();
+  int order =
+      2 * (dim * displacementLocalFiniteElement.localBasis().order() - 1);
   const auto &quad = QuadratureRules<double, dim>::rule(element.type(), order);
+
+  // Displacement Gradient
+  auto dispDerivative = derivative(localDispFunction);
   // Loop over all quadrature points
-  for (const auto &quadPoint : quad) {
-    // { begin_quad_loop_end }
-    // { quad_loop_preamble_begin }
-    // The transposed inverse Jacobian of the map from the
-    // reference element to the element
+  for (auto [position, weight] : quad) {
     const auto jacobianInverseTransposed =
-        geometry.jacobianInverseTransposed(quadPoint.position());
+        geometry.jacobianInverseTransposed(position);
     // The multiplicative factor in the integral transformation formula
-    const auto integrationElement =
-        geometry.integrationElement(quadPoint.position());
-    // { quad_loop_preamble_end }
-    ///////////////////////////////////////////////////////////////////////
-    // Velocity--velocity coupling
-    ///////////////////////////////////////////////////////////////////////
+    const auto integrationElement = geometry.integrationElement(position);
+
+    // calculate relevant function values
+    auto phasefieldFunctionValue = localPhaseFunction(position)[0];
+
+    auto dispGradient = dispDerivative(position);
+    Dune::FieldMatrix<double, dim, dim> strains(0);
+
+    //std::cout << dispGradient << std::endl;
+
+    //for (int i = 0; i < dim; i++) {
+    //  for (int j = 0; j < dim; j++) {
+    //    strains[i][j] = 0.5 * ( dispGradient[i][j] + dispGradient[j][i] );
+    //  }
+    //}
+
+    //////////////////////////////////////////////////////////////////
     // The gradients of the shape functions on the reference element
-    // { velocity_gradients_begin }
     std::vector<FieldMatrix<double, 1, dim>> referenceGradients;
-    velocityLocalFiniteElement.localBasis().evaluateJacobian(
-        quadPoint.position(), referenceGradients);
+    displacementLocalFiniteElement.localBasis().evaluateJacobian(
+        position, referenceGradients);
     // Compute the shape function gradients on the grid element
     std::vector<FieldVector<double, dim>> gradients(referenceGradients.size());
     for (size_t i = 0; i < gradients.size(); i++)
       jacobianInverseTransposed.mv(referenceGradients[i][0], gradients[i]);
-    // { velocity_gradients_end }
+
+    std::vector<std::array<FieldMatrix<double, dim, dim>, dim>> deltaLinStrain(
+        num_nodes);
+    // Loop over the Dofs
+    for (size_t i = 0; i < num_nodes; i++) {
+      for (size_t k = 0; k < dim; k++) {
+        //
+        FieldMatrix<double, dim, dim> displacementGradiente(0);
+        displacementGradiente[k] = gradients[i];
+        // elementMatrix[row][col] += ( gradients[i] * gradients[j] )*
+        // quadPoint.weight() * integrationElement;
+
+        FieldMatrix<double, dim, dim> linearisedStrains(0);
+
+        for (int k = 0; k < dim; k++) {
+          for (int l = 0; l < dim; l++) {
+            linearisedStrains[k][l] = 0.5 * (displacementGradiente[k][l] +
+                                             displacementGradiente[l][k]);
+          }
+        }
+        // std::cout << linearisedStrains << std::endl;
+
+        deltaLinStrain[i][k] = linearisedStrains;
+      }
+    }
+
+    /////////////////////////////////////////////////////////////////
+    // The values of the Phasefield shape functions
+    std::vector<FieldVector<double, 1>> phaseFieldValue;
+    phasefieldLocalFiniteElement.localBasis().evaluateFunction(position,
+                                                               phaseFieldValue);
+
+    std::vector<FieldMatrix<double, 1, dim>> referencePhaseGradients;
+    phasefieldLocalFiniteElement.localBasis().evaluateJacobian(
+        position, referencePhaseGradients);
+
+    std::vector<FieldVector<double, dim>> phaseFieldGradients(
+        referencePhaseGradients.size());
+
+    for (size_t i = 0; i < gradients.size(); i++)
+      jacobianInverseTransposed.mv(referencePhaseGradients[i][0],
+                                   phaseFieldGradients[i]);
+
+
+    ///////////////////////////////////////////////////////////////////////
+    // Displacements--Displacements coupling
+    ///////////////////////////////////////////////////////////////////////
+    // TODO degradation
+    double degradation = material.degradationFunction(phasefieldFunctionValue);
     // Compute the actual matrix entries
-    // { velocity_velocity_coupling_begin }
-    for (size_t i = 0; i < velocityLocalFiniteElement.size(); i++)
-      for (size_t j = 0; j < velocityLocalFiniteElement.size(); j++)
+    // \int g(\phi) * C(\Delta \eps) : \virt \eps \diff \Omega
+    FieldMatrix<double, dim, dim> stressTensor(0);
+    for (size_t i = 0; i < displacementLocalFiniteElement.size(); i++)
+      for (size_t j = 0; j < displacementLocalFiniteElement.size(); j++)
         for (size_t k = 0; k < dim; k++) {
+          stressTensor = 0.0;
           size_t row = localView.tree().child(_0, k).localIndex(i);
           size_t col = localView.tree().child(_0, k).localIndex(j);
-          elementMatrix[row][col] += (gradients[i] * gradients[j]) *
-                                     quadPoint.weight() * integrationElement;
+          auto inkreStrain = deltaLinStrain[row][i];
+          auto virtStrain = deltaLinStrain[col][j];
+          material.stresses(inkreStrain, stressTensor);
+
+          double value = 0.0;
+          for (int l = 0; l < dim; l++)
+            for (int o = 0; o < dim; o++) {
+              value += virtStrain[l][o] * stressTensor[l][o];
+            }
+
+          elementMatrix[row][col] +=
+              degradation * value * weight * integrationElement;
         }
-    // { velocity_velocity_coupling_end }
+
     ///////////////////////////////////////////////////////////////////////
-    // Velocity--pressure coupling
+    // Displacements--Phasefield coupling
     ///////////////////////////////////////////////////////////////////////
-    // The values of the pressure shape functions
-    // { pressure_values_begin }
-    std::vector<FieldVector<double, 1>> pressureValues;
-    pressureLocalFiniteElement.localBasis().evaluateFunction(
-        quadPoint.position(), pressureValues);
-    // { pressure_values_end }
+    
+
     // Compute the actual matrix entries
-    // { velocity_pressure_coupling_begin }
-    for (size_t i = 0; i < velocityLocalFiniteElement.size(); i++)
-      for (size_t j = 0; j < pressureLocalFiniteElement.size(); j++)
-        for (size_t k = 0; k < dim; k++) {
+
+    // TODO: Current Stresses, degradation function derivative
+    // -\int 2(1 - \phi) \virt\phi \cdot \sigma_0(\eps) : \delt\eps \diff \Omega 
+    for (size_t i = 0; i < displacementLocalFiniteElement.size(); i++)
+      for (size_t k = 0; k < dim; k++)
+        for (size_t j = 0; j < phasefieldLocalFiniteElement.size(); j++) {
           size_t vIndex = localView.tree().child(_0, k).localIndex(i);
           size_t pIndex = localView.tree().child(_1).localIndex(j);
-          auto value = gradients[i][k] * pressureValues[j] *
-                       quadPoint.weight() * integrationElement;
+          auto value = - 2.0* (1.0 - phasefieldFunctionValue) * phaseFieldValue[j] * weight *
+                       integrationElement;
           elementMatrix[vIndex][pIndex] += value;
           elementMatrix[pIndex][vIndex] += value;
         }
-    // { velocity_pressure_coupling_end }
+
+    ///////////////////////////////////////////////////////////////////////
+    // Phasefield--Phasefield coupling
+    ///////////////////////////////////////////////////////////////////////
+
+    // Compute the actual matrix entries
+    // \int 2 \Delta \phi\virt \phi \cdot \psi_0 \diff \Omega 
+    // + G_c \int \frac{1}{l} (\Delta \phi \vdiff \phi + l^2 \grad \Delta \phi \cdot \grad \vdiff \phi) \diff \Omega
+    for (size_t i = 0; i < phasefieldLocalFiniteElement.size(); i++)
+      for (size_t j = 0; j < phasefieldLocalFiniteElement.size(); j++) {
+        size_t vIndex = localView.tree().child(_1).localIndex(i);
+        size_t pIndex = localView.tree().child(_1).localIndex(j);
+        //
+        auto valueFirst = 2.0 * phaseFieldValue[i] * phaseFieldValue[j] * weight *
+                          integrationElement;
+        auto valueSecond = material._regularisationParameter *
+                           material._regularisationParameter * weight *
+                           integrationElement;
+        elementMatrix[vIndex][pIndex] += valueFirst;
+      }
   }
 }
 
@@ -169,35 +252,33 @@ decltype(auto) matrixEntry(Matrix &matrix, const MultiIndex &row,
 }
 
 // Assemble the Laplace stiffness matrix on the given grid view
-// { global_assembler_signature_begin }
-template <class Basis, class Matrix>
-void assembleStokesMatrix(const Basis &basis, Matrix &matrix)
-// { global_assembler_signature_end }
-{
-  // { setup_matrix_pattern_begin }
-  // Set matrix size and occupation pattern
-  setOccupationPattern(basis, matrix);
+template <class Basis, class displacementFunction, class phasefieldFunction,
+          class Matrix>
+void assemblePhasefieldMatrix(const Basis &basis,
+                              const displacementFunction &dispFunction,
+                              const phasefieldFunction &phaseFieldFunction,
+                              Matrix &matrix) {
   // Set all entries to zero
   matrix = 0;
-  // { setup_matrix_pattern_end }
   // A view on the FE basis on a single element
-  // { get_localview_begin }
   auto localView = basis.localView();
-  // { get_localview_end }
+  auto localDispFunctionView = localFunction(dispFunction);
+  auto localPhaseFunctionView = localFunction(phaseFieldFunction);
   // A loop over all elements of the grid
-  // { element_loop_and_bind_begin }
+  auto material = Dune::Biw467::material<2>(0.01, 100, 200, 0.1);
   for (const auto &element : elements(basis.gridView())) {
     // Bind the local FE basis view to the current element
     localView.bind(element);
-    // { element_loop_and_bind_end }
+    localDispFunctionView.bind(element);
+    localPhaseFunctionView.bind(element);
     // Now let’s get the element stiffness matrix
     // A dense matrix is used for the element stiffness matrix
-    // { setup_element_stiffness_begin }
     Dune::Matrix<double> elementMatrix;
-    assembleElementStiffnessMatrix(localView, elementMatrix);
-    // { setup_element_stiffness_end }
+    Dune::BlockVector<double> elementResidualVector;
+    assembleElementStiffnessMatrix(localView, localDispFunctionView,
+                                   localPhaseFunctionView, elementMatrix,
+                                   material);
     // Add element stiffness matrix onto the global stiffness matrix
-    // { accumulate_global_matrix_begin }
     for (size_t i = 0; i < elementMatrix.N(); i++) {
       // The global index of the i-th local degree of freedom
       // of the current element
@@ -213,15 +294,12 @@ void assembleStokesMatrix(const Basis &basis, Matrix &matrix)
   }
 }
 
-// { main_begin }
 int main(int argc, char *argv[]) {
   // Set up MPI, if available
   MPIHelper::instance(argc, argv);
-  // { mpi_setup_end }
   ///////////////////////////////////
   // Generate the grid
   ///////////////////////////////////
-  // { grid_setup_begin }
   constexpr int dim = 2;
   using Grid = YaspGrid<dim>;
   FieldVector<double, dim> upperRight = {1, 1};
@@ -229,24 +307,26 @@ int main(int argc, char *argv[]) {
   Grid grid(upperRight, nElements);
   using GridView = typename Grid::LeafGridView;
   GridView gridView = grid.leafGridView();
-  // { grid_setup_end }
   /////////////////////////////////////////////////////////
   // Choose a finite element space
   /////////////////////////////////////////////////////////
-  // { function_space_basis_begin }
   using namespace Functions::BasisFactory;
   constexpr std::size_t p = 1; // Pressure order for Taylor-Hood
-  auto taylorHoodBasis = makeBasis(
-      gridView, composite(power<dim>(lagrange<p + 1>(), blockedInterleaved()),
-                          lagrange<p>()));
-  // { function_space_basis_end }
+  auto dispPhase = makeBasis(gridView,
+                             composite(power<dim>(                //
+                                           lagrange<p>(),         //
+                                           blockedInterleaved()), //
+                                       lagrange<p>()              //
+                                       ));
+  using namespace Indices;
+  auto displacementBasis = Functions::subspaceBasis(dispPhase, _0);
+  auto phasefieldBasis = Functions::subspaceBasis(dispPhase, _1);
   /////////////////////////////////////////////////////////
   // Stiffness matrix and right hand side vector
   /////////////////////////////////////////////////////////
-  // { linear_algebra_setup_begin }
-  using VelocityVector = BlockVector<FieldVector<double, dim>>;
-  using PressureVector = BlockVector<double>;
-  using Vector = MultiTypeBlockVector<VelocityVector, PressureVector>;
+  using DisplacmentVector = BlockVector<FieldVector<double, dim>>;
+  using PhasefieldVector = BlockVector<double>;
+  using Vector = MultiTypeBlockVector<DisplacmentVector, PhasefieldVector>;
   using Matrix00 = BCRSMatrix<FieldMatrix<double, dim, dim>>;
   using Matrix01 = BCRSMatrix<FieldMatrix<double, dim, 1>>;
   using Matrix10 = BCRSMatrix<FieldMatrix<double, 1, dim>>;
@@ -254,57 +334,65 @@ int main(int argc, char *argv[]) {
   using MatrixRow0 = MultiTypeBlockVector<Matrix00, Matrix01>;
   using MatrixRow1 = MultiTypeBlockVector<Matrix10, Matrix11>;
   using Matrix = MultiTypeBlockMatrix<MatrixRow0, MatrixRow1>;
-  // { linear_algebra_setup_end }
   /////////////////////////////////////////////////////////
   // Assemble the system
   /////////////////////////////////////////////////////////
-  // { rhs_assembly_begin }
   Vector rhs;
+  Vector sol;
+  Vector solInkrement;
   auto rhsBackend = Functions::istlVectorBackend(rhs);
-  rhsBackend.resize(taylorHoodBasis);
+  rhsBackend.resize(dispPhase);
+  // initialisation with copy.
   rhs = 0;
-  // { rhs_assembly_end }
-  // { matrix_assembly_begin }
+  sol = rhs;
+  solInkrement = rhs;
+
+  // make a solution function
+  auto displacementFunction =
+      Functions::makeDiscreteGlobalBasisFunction<DisplacmentVector>(
+          displacementBasis, sol);
+  auto phasefieldFunction =
+      Functions::makeDiscreteGlobalBasisFunction<PhasefieldVector>(
+          phasefieldBasis, sol);
+
   Matrix stiffnessMatrix;
-  assembleStokesMatrix(taylorHoodBasis, stiffnessMatrix);
-  // { matrix_assembly_end }
+  // Set matrix size and occupation pattern
+  setOccupationPattern(dispPhase, stiffnessMatrix);
+
+  assemblePhasefieldMatrix(dispPhase, displacementFunction, phasefieldFunction,
+                           stiffnessMatrix);
   /////////////////////////////////////////////////////////
   // Set Dirichlet values.
   // Only velocity components have Dirichlet boundary values
   /////////////////////////////////////////////////////////
-  // { initialize_boundary_dofs_vector_begin }
   using VelocityBitVector = std::vector<std::array<char, dim>>;
   using PressureBitVector = std::vector<char>;
   using BitVector = TupleVector<VelocityBitVector, PressureBitVector>;
   BitVector isBoundary;
   auto isBoundaryBackend = Functions::istlVectorBackend(isBoundary);
-  isBoundaryBackend.resize(taylorHoodBasis);
-  using namespace Indices;
+  isBoundaryBackend.resize(dispPhase);
+
   for (auto &&b0i : isBoundary[_0])
     for (std::size_t j = 0; j < b0i.size(); ++j)
       b0i[j] = false;
   std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), false);
-  // { initialize_boundary_dofs_vector_end }
-  // { determine_boundary_dofs_begin }
   Functions::forEachBoundaryDOF(
-      Functions::subspaceBasis(taylorHoodBasis, _0),
+      Functions::subspaceBasis(dispPhase, _0),
       [&](auto &&index) { isBoundaryBackend[index] = true; });
-  // { determine_boundary_dofs_end }
-  // { interpolate_dirichlet_values_begin }
+
   using Coordinate = GridView::Codim<0>::Geometry::GlobalCoordinate;
-  using VelocityRange = FieldVector<double, dim>;
+  using DisplacementRange = FieldVector<double, dim>;
   auto &&g = [](Coordinate x) {
-    return VelocityRange{0.0, (x[0] < 1e-8) ? 1.0 : 0.0};
+    return DisplacementRange{0.0, (x[0] < 1e-8) ? 1.0 : 0.0};
   };
-  Functions::interpolate(Functions::subspaceBasis(taylorHoodBasis, _0), rhs, g,
+  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), rhs, g,
                          isBoundary);
-  // { interpolate_dirichlet_values_end }
+
   ////////////////////////////////////////////
   // Modify Dirichlet rows
   ////////////////////////////////////////////
-  // Loop over the matrix rows
-  // { set_dirichlet_matrix_begin }
-  auto localView = taylorHoodBasis.localView();
+
+  auto localView = dispPhase.localView();
   for (const auto &element : elements(gridView)) {
     localView.bind(element);
     for (size_t i = 0; i < localView.size(); ++i) {
@@ -318,18 +406,17 @@ int main(int argc, char *argv[]) {
         }
     }
   }
-  // { set_dirichlet_matrix_end }
+
   ////////////////////////////
   // Compute solution
   ////////////////////////////
-  // { stokes_solve_begin }
   // Initial iterate: Start from the rhs vector,
   // that way the Dirichlet entries are already correct.
   Vector x = rhs;
   // Turn the matrix into a linear operator
   MatrixAdapter<Matrix, Vector, Vector> stiffnessOperator(stiffnessMatrix);
   // Fancy (but only) way to not have a preconditioner at all
-  Richardson<Vector, Vector> preconditioner(1.0);
+  Richardson<Vector, Vector> preconditioner(0.8);
   // Construct the iterative solver
   RestartedGMResSolver<Vector> solver(stiffnessOperator, // Operator to invert
                                       preconditioner,
@@ -347,34 +434,33 @@ int main(int argc, char *argv[]) {
   InverseOperatorResult statistics;
   // Solve!
   solver.apply(x, rhs, statistics);
-  // { stokes_solve_end }
+
   ////////////////////////////////////////////////////////////////////////////
   // Make a discrete function from the FE basis and the coefficient vector
   ////////////////////////////////////////////////////////////////////////////
-  // { make_result_functions_begin }
-  using VelocityRange = FieldVector<double, dim>;
+
+  using DisplacementRange = FieldVector<double, dim>;
   using PressureRange = double;
   auto velocityFunction =
-      Functions::makeDiscreteGlobalBasisFunction<VelocityRange>(
-          Functions::subspaceBasis(taylorHoodBasis, _0), x);
+      Functions::makeDiscreteGlobalBasisFunction<DisplacementRange>(
+          Functions::subspaceBasis(dispPhase, _0), x);
   auto pressureFunction =
       Functions::makeDiscreteGlobalBasisFunction<PressureRange>(
-          Functions::subspaceBasis(taylorHoodBasis, _1), x);
-  // { make_result_functions_end }
+          Functions::subspaceBasis(dispPhase, _1), x);
+
   //////////////////////////////////////////////////////////////////////////////////////////////
   // Write result to VTK file
   // We need to subsample, because the dune-grid VTKWriter cannot natively
   // display second-order functions
   //////////////////////////////////////////////////////////////////////////////////////////////
-  // { vtk_output_begin }
+
   SubsamplingVTKWriter<GridView> vtkWriter(gridView, refinementLevels(2));
 
   vtkWriter.addVertexData(
       velocityFunction,
-      VTK::FieldInfo("velocity", VTK::FieldInfo::Type::vector, dim));
+      VTK::FieldInfo("displacments", VTK::FieldInfo::Type::vector, dim));
   vtkWriter.addVertexData(
       pressureFunction,
-      VTK::FieldInfo("pressure", VTK::FieldInfo::Type::scalar, 1));
-  vtkWriter.write("stokes-taylorhood-result");
-  // { vtk_output_end }
+      VTK::FieldInfo("phasefield", VTK::FieldInfo::Type::scalar, 1));
+  vtkWriter.write("phasefield-result");
 }
