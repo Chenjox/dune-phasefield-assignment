@@ -71,13 +71,18 @@ void assembleElementStiffnessMatrix(
     auto dispGradient = dispDerivative(position);
     Dune::FieldMatrix<double, dim, dim> strains(0);
 
+    Dune::FieldMatrix<double, dim, dim> stresses(0);
+
     //std::cout << dispGradient << std::endl;
 
-    //for (int i = 0; i < dim; i++) {
-    //  for (int j = 0; j < dim; j++) {
-    //    strains[i][j] = 0.5 * ( dispGradient[i][j] + dispGradient[j][i] );
-    //  }
-    //}
+    for (int i = 0; i < dim; i++) {
+      for (int j = 0; j < dim; j++) {
+        strains[i][j] = 0.5 * ( dispGradient[i][j] + dispGradient[j][i] );
+      }
+    }
+
+    double undamagedEnergy = material.strainEnergyDensity(strains);
+    material.stresses(strains, stresses);
 
     //////////////////////////////////////////////////////////////////
     // The gradients of the shape functions on the reference element
@@ -192,12 +197,15 @@ void assembleElementStiffnessMatrix(
         size_t vIndex = localView.tree().child(_1).localIndex(i);
         size_t pIndex = localView.tree().child(_1).localIndex(j);
         //
-        auto valueFirst = 2.0 * phaseFieldValue[i] * phaseFieldValue[j] * weight *
+        auto valueFirst = 2.0 * phaseFieldValue[i] * phaseFieldValue[j] * undamagedEnergy * weight *
                           integrationElement;
-        auto valueSecond = material._regularisationParameter *
-                           material._regularisationParameter * weight *
+        auto scalarproduct = phaseFieldGradients[i] * phaseFieldGradients[j];
+
+        auto valueSecond = phaseFieldValue[i] * phaseFieldValue[j] +material._regularisationParameter *
+                           material._regularisationParameter * scalarproduct *weight *
                            integrationElement;
         elementMatrix[vIndex][pIndex] += valueFirst;
+        elementMatrix[vIndex][pIndex] += material._griffithReleaseRate/material._regularisationParameter * valueSecond;
       }
   }
 }
@@ -417,7 +425,6 @@ int main(int argc, char *argv[]) {
   ////////////////////////////
   // Initial iterate: Start from the rhs vector,
   // that way the Dirichlet entries are already correct.
-  Vector x = rhs;
   // Turn the matrix into a linear operator
   MatrixAdapter<Matrix, Vector, Vector> stiffnessOperator(stiffnessMatrix);
   // Fancy (but only) way to not have a preconditioner at all
@@ -438,20 +445,7 @@ int main(int argc, char *argv[]) {
   // Object storing some statistics about the solving process
   InverseOperatorResult statistics;
   // Solve!
-  solver.apply(x, rhs, statistics);
-
-  ////////////////////////////////////////////////////////////////////////////
-  // Make a discrete function from the FE basis and the coefficient vector
-  ////////////////////////////////////////////////////////////////////////////
-
-  using DisplacementRange = FieldVector<double, dim>;
-  using PressureRange = double;
-  auto velocityFunction =
-      Functions::makeDiscreteGlobalBasisFunction<DisplacementRange>(
-          Functions::subspaceBasis(dispPhase, _0), x);
-  auto pressureFunction =
-      Functions::makeDiscreteGlobalBasisFunction<PressureRange>(
-          Functions::subspaceBasis(dispPhase, _1), x);
+  solver.apply(solInkrement, rhs, statistics);
 
   //////////////////////////////////////////////////////////////////////////////////////////////
   // Write result to VTK file
@@ -462,10 +456,10 @@ int main(int argc, char *argv[]) {
   SubsamplingVTKWriter<GridView> vtkWriter(gridView, refinementLevels(2));
 
   vtkWriter.addVertexData(
-      velocityFunction,
+      displacementFunction,
       VTK::FieldInfo("displacments", VTK::FieldInfo::Type::vector, dim));
   vtkWriter.addVertexData(
-      pressureFunction,
+      phasefieldFunction,
       VTK::FieldInfo("phasefield", VTK::FieldInfo::Type::scalar, 1));
   vtkWriter.write("phasefield-result");
 }
