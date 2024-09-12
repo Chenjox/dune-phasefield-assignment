@@ -1,4 +1,5 @@
 #include "dune/biw4-67-phasefield/biw4-67-phasefield.hh"
+#include "dune/common/fvector.hh"
 #include "dune/istl/bvector.hh"
 #include <config.h>
 
@@ -65,7 +66,7 @@ void assembleElementStiffnessMatrix(
     const auto integrationElement = geometry.integrationElement(position);
 
     // calculate relevant function values
-    auto phasefieldFunctionValue = localPhaseFunction(position)[0];
+    auto phasefieldFunctionValue = localPhaseFunction(position);
 
     auto dispGradient = dispDerivative(position);
     Dune::FieldMatrix<double, dim, dim> strains(0);
@@ -303,7 +304,7 @@ int main(int argc, char *argv[]) {
   constexpr int dim = 2;
   using Grid = YaspGrid<dim>;
   FieldVector<double, dim> upperRight = {1, 1};
-  std::array<int, dim> nElements = {4, 4};
+  std::array<int, dim> nElements = {5, 5};
   Grid grid(upperRight, nElements);
   using GridView = typename Grid::LeafGridView;
   GridView gridView = grid.leafGridView();
@@ -324,8 +325,10 @@ int main(int argc, char *argv[]) {
   /////////////////////////////////////////////////////////
   // Stiffness matrix and right hand side vector
   /////////////////////////////////////////////////////////
-  using DisplacmentVector = BlockVector<FieldVector<double, dim>>;
-  using PhasefieldVector = BlockVector<double>;
+  using DisplacementRange = FieldVector<double, dim>;
+  using PhasefieldRange = double;
+  using DisplacmentVector = BlockVector<DisplacementRange>;
+  using PhasefieldVector = BlockVector<PhasefieldRange>;
   using Vector = MultiTypeBlockVector<DisplacmentVector, PhasefieldVector>;
   using Matrix00 = BCRSMatrix<FieldMatrix<double, dim, dim>>;
   using Matrix01 = BCRSMatrix<FieldMatrix<double, dim, 1>>;
@@ -349,16 +352,18 @@ int main(int argc, char *argv[]) {
 
   // make a solution function
   auto displacementFunction =
-      Functions::makeDiscreteGlobalBasisFunction<DisplacmentVector>(
+      Functions::makeDiscreteGlobalBasisFunction<DisplacementRange>(
           displacementBasis, sol);
   auto phasefieldFunction =
-      Functions::makeDiscreteGlobalBasisFunction<PhasefieldVector>(
+      Functions::makeDiscreteGlobalBasisFunction<PhasefieldRange>(
           phasefieldBasis, sol);
+
 
   Matrix stiffnessMatrix;
   // Set matrix size and occupation pattern
   setOccupationPattern(dispPhase, stiffnessMatrix);
 
+  
   assemblePhasefieldMatrix(dispPhase, displacementFunction, phasefieldFunction,
                            stiffnessMatrix);
   /////////////////////////////////////////////////////////

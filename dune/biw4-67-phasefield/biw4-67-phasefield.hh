@@ -51,7 +51,7 @@ namespace Dune {
                 return _shearModulus*traceE2 + 0.5*_firstLameConstant*trace*trace;
             }
 
-            double stresses(const Dune::FieldMatrix<field_type, dim, dim>& strains, Dune::FieldMatrix<field_type, dim, dim>& stresses) const {
+            void stresses(const Dune::FieldMatrix<field_type, dim, dim>& strains, Dune::FieldMatrix<field_type, dim, dim>& stresses) const {
                 stresses = 0.0;
                 double trace = 0.0;
                 for (int i = 0; i <dim; i++) {
@@ -60,7 +60,7 @@ namespace Dune {
                 if (dim == 2) { // Plane Strain correction
                     trace += 1.0;
                 }
-                for (int i; i < dim; i++) {
+                for (int i = 0; i < dim; i++) {
                     for (int j; j < dim; j++) {
                         stresses[i][j] += _firstLameConstant * strains[i][j];
                     }
