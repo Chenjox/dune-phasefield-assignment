@@ -138,7 +138,7 @@ void assembleElementStiffnessMatrix(
                                              displacementGradiente[l][k]);
           }
         }
-        // std::cout << linearisedStrains << std::endl;
+        //std::cout << linearisedStrains << std::endl;
 
         virtualStrains[i][k] = linearisedStrains;
       }
@@ -170,12 +170,13 @@ void assembleElementStiffnessMatrix(
     FieldMatrix<double, dim, dim> stressTensor(0);
     for (size_t i = 0; i < displacementLocalFiniteElement.size(); i++)
       for (size_t j = 0; j < displacementLocalFiniteElement.size(); j++)
-        for (size_t k = 0; k < dim; k++) {
-          stressTensor = 0.0;
+        for (size_t k = 0; k < dim; k++) 
+          for (size_t m = 0; m <dim; m++) {
           size_t row = localView.tree().child(_0, k).localIndex(i);
-          size_t col = localView.tree().child(_0, k).localIndex(j);
-          auto inkreStrain = virtualStrains[row][i];
-          auto virtStrain = virtualStrains[col][j];
+          size_t col = localView.tree().child(_0, m).localIndex(j);
+          auto inkreStrain = virtualStrains[i][k];
+          auto virtStrain = virtualStrains[j][m];
+          stressTensor = 0.0;
           material.stresses(inkreStrain, stressTensor);
 
           double value = 0.0;
@@ -183,7 +184,6 @@ void assembleElementStiffnessMatrix(
             for (int o = 0; o < dim; o++) {
               value += virtStrain[l][o] * stressTensor[l][o];
             }
-
           elementMatrix[row][col] +=
               degradation * value * weight * integrationElement;
         }
@@ -278,8 +278,8 @@ void assembleElementStiffnessMatrix(
 
     //std::cout << elementResidualVector << std::endl;
     
-    for (int i = 0; i < 8; i++) {
-      for (int j = 0; j < 8; j++) {
+    for (int i = 0; i < elementMatrix.M(); i++) {
+      for (int j = 0; j < elementMatrix.N(); j++) {
         std::cout << elementMatrix[i][j] << " ";
       }
       std::cout << std::endl;
