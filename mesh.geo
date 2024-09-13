@@ -1,7 +1,7 @@
 
 width = 2;
 a = 0.3;
-sepa = 0.0;
+sepa = 0.0001;
 numNodes = 16;
 numNodesOuter = 24;
 //num_nodes= If (!Exists(num_nodes)) 

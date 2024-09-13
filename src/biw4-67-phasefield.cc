@@ -56,8 +56,7 @@ void assembleElementStiffnessMatrix(
   const auto &phasefieldLocalFiniteElement =
       localView.tree().child(_1).finiteElement();
   auto num_nodes = displacementLocalFiniteElement.localBasis().size();
-  int order =
-      2 * (dim * displacementLocalFiniteElement.localBasis().order() - 1);
+  int order = 2 * (dim * displacementLocalFiniteElement.localBasis().order());
   const auto &quad = QuadratureRules<double, dim>::rule(element.type(), order);
 
   // Displacement Gradient
@@ -439,12 +438,15 @@ int main(int argc, char *argv[]) {
   Vector rhs;
   Vector sol;
   Vector solInkrement;
+  Vector positions;
   auto rhsBackend = Functions::istlVectorBackend(rhs);
   rhsBackend.resize(dispPhase);
   // initialisation with copy.
   rhs = 0;
   sol = rhs;
   solInkrement = rhs;
+  positions = rhs;
+  auto positionsBackend = Functions::istlVectorBackend(positions);
 
   sol = 0;
   solInkrement = 0;
@@ -468,6 +470,7 @@ int main(int argc, char *argv[]) {
   using DisplacementBitVector = std::vector<std::array<char, dim>>;
   using PhasefieldBitVector = std::vector<char>;
   using BitVector = TupleVector<DisplacementBitVector, PhasefieldBitVector>;
+  using Coordinate = GridView::Codim<0>::Geometry::GlobalCoordinate;
   BitVector isBoundary;
   auto isBoundaryBackend = Functions::istlVectorBackend(isBoundary);
   isBoundaryBackend.resize(dispPhase);
@@ -476,18 +479,42 @@ int main(int argc, char *argv[]) {
     for (std::size_t j = 0; j < b0i.size(); ++j)
       b0i[j] = false;
   std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), false);
-  Functions::forEachBoundaryDOF(
-      Functions::subspaceBasis(dispPhase, _0),
-      [&](auto &&index) { isBoundaryBackend[index] = true; });
 
-  using Coordinate = GridView::Codim<0>::Geometry::GlobalCoordinate;
+  auto &&iden = [](Coordinate x) { return DisplacementRange{x[0], x[1]}; };
+
+  // TODO DIRICHLET!!!!!
+  // 1. What you could do for Lagrange basis is to interpolate the function f(x)
+  // = x into the Lagrange space on the element. The coefficients of this
+  // interpolations then given you the Lagrange node position. 2.
+
+  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), positions,
+                         iden);
+
+  Functions::forEachBoundaryDOF(
+      Functions::subspaceBasis(dispPhase, _0), [&](auto &&index) {
+        auto position = positions[_0][index[1]];
+        if (std::abs(position[1] - 1.0) < 1e-8)
+          isBoundaryBackend[index] = true; // unterer Rand
+        if (std::abs(position[1] + 1.0) < 1e-8)
+          isBoundaryBackend[index] = true; // oberer Rand
+        if (std::abs(position[1] + 1.0) < 1e-8 &&
+            std::abs(position[0] + 1.0) < 1e-8)
+          isBoundaryBackend[index] = true; // Ecke
+      });
+
   auto &&g = [](Coordinate x) {
-    return DisplacementRange{0.0, (x[0] < 1e-8) ? 0.1 : 0.0};
+    if (std::abs(x[1] + 1.0) < 1e-8) {
+      return DisplacementRange{0.0, -0.01};
+    }
+    if (std::abs(x[1] - 1.0) < 1e-8) {
+      return DisplacementRange{0.0, 0.01};
+    }
+    return DisplacementRange{0.0, 0.0};
   };
   Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
                          isBoundary);
 
-  int constexpr MAX_ITER = 3;
+  int constexpr MAX_ITER = 5;
   int iter_num = 0;
   do {
 
@@ -500,7 +527,7 @@ int main(int argc, char *argv[]) {
     // Modify Dirichlet rows
     ////////////////////////////////////////////
 
-    stiffnessMatrix.umv(sol, rhs);
+    // stiffnessMatrix.umv(sol, rhs);
 
     // std::cout << rhs << std::endl;
 
@@ -541,7 +568,7 @@ int main(int argc, char *argv[]) {
                                         // restarts, here: no restarting
                                         500,
                                         // Maximum number of iterations
-                                        2);
+                                        1);
     // Verbosity of the solver
     // Object storing some statistics about the solving process
     InverseOperatorResult statistics;
