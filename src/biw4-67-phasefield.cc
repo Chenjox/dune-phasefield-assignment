@@ -4,6 +4,7 @@
 #include <config.h>
 
 #include <array>
+#include <cstddef>
 #include <dune/common/indices.hh>
 #include <dune/functions/backends/istlvectorbackend.hh>
 #include <dune/functions/functionspacebases/boundarydofs.hh>
@@ -62,6 +63,8 @@ void assembleElementStiffnessMatrix(
 
   // Displacement Gradient
   auto dispDerivative = derivative(localDispFunction);
+  // Phasefield Gradient
+  auto phaseDerivative = derivative(localPhaseFunction);
   // Loop over all quadrature points
   for (auto [position, weight] : quad) {
     const auto jacobianInverseTransposed =
@@ -71,22 +74,40 @@ void assembleElementStiffnessMatrix(
 
     // calculate relevant function values
     auto phasefieldFunctionValue = localPhaseFunction(position);
+    auto phaseFieldFunctionDerivative = phaseDerivative(position);
 
     auto dispGradient = dispDerivative(position);
-    Dune::FieldMatrix<double, dim, dim> strains(0);
+    Dune::FieldMatrix<double, dim, dim> currentStrains(0);
 
-    Dune::FieldMatrix<double, dim, dim> stresses(0);
+    Dune::FieldMatrix<double, dim, dim> currentStresses(0);
 
     //std::cout << dispGradient << std::endl;
 
     for (int i = 0; i < dim; i++) {
       for (int j = 0; j < dim; j++) {
-        strains[i][j] = 0.5 * ( dispGradient[i][j] + dispGradient[j][i] );
+        currentStrains[i][j] = 0.5 * ( dispGradient[i][j] + dispGradient[j][i] );
       }
     }
 
-    double undamagedEnergy = material.strainEnergyDensity(strains);
-    material.stresses(strains, stresses);
+    double undamagedEnergy = material.strainEnergyDensity(currentStrains);
+    material.stresses(currentStrains, currentStresses);
+
+
+    double degradation = material.degradationFunction(phasefieldFunctionValue);
+
+    //std::cout << "Current undamaged Energy " << undamagedEnergy << std::endl;
+    //std::cout << "Current degradation " << degradation << std::endl;
+    //std::cout << "Current strains " << std::endl << currentStrains << std::endl;
+    //std::cout << "Current stresses " << std::endl << currentStresses << std::endl;
+
+    //std::cout << material._regularisationParameter << std::endl;
+    //std::cout << material._griffithReleaseRate << std::endl;
+    //std::cout << material._shearModulus << std::endl;
+
+    double l = material._regularisationParameter;
+    double gc = material._griffithReleaseRate;
+
+    //std::cout << "G_c / l = " << gc/l << std::endl;
 
     //////////////////////////////////////////////////////////////////
     // The gradients of the shape functions on the reference element
@@ -98,7 +119,7 @@ void assembleElementStiffnessMatrix(
     for (size_t i = 0; i < gradients.size(); i++)
       jacobianInverseTransposed.mv(referenceGradients[i][0], gradients[i]);
 
-    std::vector<std::array<FieldMatrix<double, dim, dim>, dim>> deltaLinStrain(
+    std::vector<std::array<FieldMatrix<double, dim, dim>, dim>> virtualStrains(
         num_nodes);
     // Loop over the Dofs
     for (size_t i = 0; i < num_nodes; i++) {
@@ -119,7 +140,7 @@ void assembleElementStiffnessMatrix(
         }
         // std::cout << linearisedStrains << std::endl;
 
-        deltaLinStrain[i][k] = linearisedStrains;
+        virtualStrains[i][k] = linearisedStrains;
       }
     }
 
@@ -144,7 +165,6 @@ void assembleElementStiffnessMatrix(
     ///////////////////////////////////////////////////////////////////////
     // Displacements--Displacements coupling
     ///////////////////////////////////////////////////////////////////////
-    double degradation = material.degradationFunction(phasefieldFunctionValue);
     // Compute the actual matrix entries
     // \int g(\phi) * C(\Delta \eps) : \virt \eps \diff \Omega
     FieldMatrix<double, dim, dim> stressTensor(0);
@@ -154,8 +174,8 @@ void assembleElementStiffnessMatrix(
           stressTensor = 0.0;
           size_t row = localView.tree().child(_0, k).localIndex(i);
           size_t col = localView.tree().child(_0, k).localIndex(j);
-          auto inkreStrain = deltaLinStrain[row][i];
-          auto virtStrain = deltaLinStrain[col][j];
+          auto inkreStrain = virtualStrains[row][i];
+          auto virtStrain = virtualStrains[col][j];
           material.stresses(inkreStrain, stressTensor);
 
           double value = 0.0;
@@ -182,15 +202,15 @@ void assembleElementStiffnessMatrix(
         for (size_t j = 0; j < phasefieldLocalFiniteElement.size(); j++) {
           size_t vIndex = localView.tree().child(_0, k).localIndex(i);
           size_t pIndex = localView.tree().child(_1).localIndex(j);
-          auto strains = deltaLinStrain[vIndex][i];
+          auto strains = virtualStrains[vIndex][i];
 
           double froeb = 0.0;
           for (int l = 0; l < dim; l++)
             for (int o = 0; o < dim; o++) {
-              froeb += strains[l][o] * stresses[l][o];
+              froeb += strains[l][o] * currentStresses[l][o];
             }
 
-          auto value = - 2.0* (1.0 - phasefieldFunctionValue) * phaseFieldValue[j] *froeb * weight *
+          auto value = - 2.0* (1.0 - phasefieldFunctionValue) * phaseFieldValue[j][0] *froeb * weight *
                        integrationElement;
           elementMatrix[vIndex][pIndex] += value;
           elementMatrix[pIndex][vIndex] += value;
@@ -208,16 +228,63 @@ void assembleElementStiffnessMatrix(
         size_t vIndex = localView.tree().child(_1).localIndex(i);
         size_t pIndex = localView.tree().child(_1).localIndex(j);
         //
-        auto valueFirst = 2.0 * phaseFieldValue[i] * phaseFieldValue[j] * undamagedEnergy * weight *
-                          integrationElement;
+        auto valueFirst = 2.0 * phaseFieldValue[i][0] * phaseFieldValue[j][0] * undamagedEnergy;
         auto scalarproduct = phaseFieldGradients[i] * phaseFieldGradients[j];
 
-        auto valueSecond = phaseFieldValue[i] * phaseFieldValue[j] +material._regularisationParameter *
-                           material._regularisationParameter * scalarproduct *weight *
-                           integrationElement;
-        elementMatrix[vIndex][pIndex] += valueFirst;
-        elementMatrix[vIndex][pIndex] += material._griffithReleaseRate/material._regularisationParameter * valueSecond;
+        auto valueSecond = phaseFieldValue[i][0] * phaseFieldValue[j][0] +l*l * scalarproduct;
+
+        elementMatrix[vIndex][pIndex] += valueFirst * weight * integrationElement;
+        elementMatrix[vIndex][pIndex] += gc/l * valueSecond * weight *integrationElement;
       }
+    
+    //////////////////////////////////////////////////////////////////////
+    // Displacement Dof residual
+    //////////////////////////////////////////////////////////////////////
+
+    for (size_t i = 0; i < displacementLocalFiniteElement.size(); i++) {
+      for (size_t k = 0; k < dim; k++) {
+          size_t dofIndex = localView.tree().child(_0, k).localIndex(i);
+          auto strains = virtualStrains[dofIndex][i];
+
+          double froeb = 0.0;
+          for (int l = 0; l < dim; l++)
+            for (int o = 0; o < dim; o++) {
+              froeb += strains[l][o] * currentStresses[l][o];
+            }
+
+          elementResidualVector[dofIndex] += degradation*froeb*weight * integrationElement;
+      }
+    }
+
+    ////////////////////////////////////////////
+    // Phasefield Dof Residual
+    ///////////////////////////////////////////
+
+    for (size_t i = 0; i < phasefieldLocalFiniteElement.size(); i++) {
+      size_t dofIndex = localView.tree().child(_1).localIndex(i);
+      
+      // -2.0*(1 - phi)\psi_0 \vdiff psi
+      double firstIntegral = -2.0 * (1.0 - phasefieldFunctionValue) * undamagedEnergy * phaseFieldValue[i];
+
+      // -
+      double secondValue = 1.0/l*phasefieldFunctionValue*phaseFieldValue[i];
+
+      double thirdValue = l* (phaseFieldFunctionDerivative*phaseFieldGradients[i]);
+
+      double secondIntegral = gc*(secondValue + thirdValue);
+
+      elementResidualVector[dofIndex] += (firstIntegral + secondIntegral) * weight * integrationElement;
+    }
+
+    //std::cout << elementResidualVector << std::endl;
+    
+    for (int i = 0; i < 8; i++) {
+      for (int j = 0; j < 8; j++) {
+        std::cout << elementMatrix[i][j] << " ";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << std::endl;
   }
 }
 
@@ -286,7 +353,7 @@ void assemblePhasefieldMatrix(const Basis &basis,
   auto localDispFunctionView = localFunction(dispFunction);
   auto localPhaseFunctionView = localFunction(phaseFieldFunction);
   // A loop over all elements of the grid
-  auto material = Dune::Biw467::material<2>(0.01, 100, 200, 0.1);
+  auto material = Dune::Biw467::material<2>(0.01, 100.0, 200.0, 0.1);
   for (const auto &element : elements(basis.gridView())) {
     // Bind the local FE basis view to the current element
     localView.bind(element);
@@ -314,6 +381,7 @@ void assemblePhasefieldMatrix(const Basis &basis,
     }
     // { accumulate_global_matrix_end }
   }
+
 }
 
 int main(int argc, char *argv[]) {
@@ -371,6 +439,9 @@ int main(int argc, char *argv[]) {
   sol = rhs;
   solInkrement = rhs;
 
+  sol = 0;
+  solInkrement = 0;
+
   // make a solution function
   auto displacementFunction =
       Functions::makeDiscreteGlobalBasisFunction<DisplacementRange>(
@@ -384,16 +455,13 @@ int main(int argc, char *argv[]) {
   // Set matrix size and occupation pattern
   setOccupationPattern(dispPhase, stiffnessMatrix);
 
-  
-  assemblePhasefieldMatrix(dispPhase, displacementFunction, phasefieldFunction,
-                           stiffnessMatrix,rhsBackend);
   /////////////////////////////////////////////////////////
   // Set Dirichlet values.
   // Only velocity components have Dirichlet boundary values
   /////////////////////////////////////////////////////////
-  using VelocityBitVector = std::vector<std::array<char, dim>>;
-  using PressureBitVector = std::vector<char>;
-  using BitVector = TupleVector<VelocityBitVector, PressureBitVector>;
+  using DisplacementBitVector = std::vector<std::array<char, dim>>;
+  using PhasefieldBitVector = std::vector<char>;
+  using BitVector = TupleVector<DisplacementBitVector, PhasefieldBitVector>;
   BitVector isBoundary;
   auto isBoundaryBackend = Functions::istlVectorBackend(isBoundary);
   isBoundaryBackend.resize(dispPhase);
@@ -407,12 +475,18 @@ int main(int argc, char *argv[]) {
       [&](auto &&index) { isBoundaryBackend[index] = true; });
 
   using Coordinate = GridView::Codim<0>::Geometry::GlobalCoordinate;
-  using DisplacementRange = FieldVector<double, dim>;
   auto &&g = [](Coordinate x) {
     return DisplacementRange{0.0, (x[0] < 1e-8) ? 1.0 : 0.0};
   };
-  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), rhs, g,
+  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
                          isBoundary);
+
+
+  
+  assemblePhasefieldMatrix(dispPhase, displacementFunction, phasefieldFunction,
+                           stiffnessMatrix,rhsBackend);
+
+  stiffnessMatrix.mmv(sol,rhs);
 
   ////////////////////////////////////////////
   // Modify Dirichlet rows
@@ -425,11 +499,13 @@ int main(int argc, char *argv[]) {
       auto row = localView.index(i);
       // If row corresponds to a boundary entry,
       // modify it to be an identity matrix row.
-      if (isBoundaryBackend[row])
+      if (isBoundaryBackend[row]){
         for (size_t j = 0; j < localView.size(); ++j) {
           auto col = localView.index(j);
           matrixEntry(stiffnessMatrix, row, col) = (i == j) ? 1 : 0;
         }
+        rhsBackend[row] = 0.0;
+      }
     }
   }
 
@@ -458,6 +534,8 @@ int main(int argc, char *argv[]) {
   // Object storing some statistics about the solving process
   InverseOperatorResult statistics;
   // Solve!
+  std::cout << rhs << std::endl;
+
   solver.apply(solInkrement, rhs, statistics);
 
   //////////////////////////////////////////////////////////////////////////////////////////////

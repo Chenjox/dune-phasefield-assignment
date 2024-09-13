@@ -43,9 +43,6 @@ namespace Dune {
                 for (int i = 0; i <dim; i++) {
                     trace += strains[i][i];
                 }
-                if (dim == 2) { // Plane Strain correction
-                    trace += 1.0;
-                }
                 double traceE2 = strains.frobenius_norm2();
 
                 return _shearModulus*traceE2 + 0.5*_firstLameConstant*trace*trace;
@@ -57,14 +54,11 @@ namespace Dune {
                 for (int i = 0; i <dim; i++) {
                     trace += strains[i][i];
                 }
-                if (dim == 2) { // Plane Strain correction
-                    trace += 1.0;
-                }
                 for (int i = 0; i < dim; i++) {
                     for (int j; j < dim; j++) {
-                        stresses[i][j] += _firstLameConstant * strains[i][j];
+                        stresses[i][j] += 2.0 * _shearModulus * strains[i][j];
                     }
-                    stresses[i][i] += 2.0 * _shearModulus * trace;
+                    stresses[i][i] +=  _firstLameConstant * trace;
                 }
             }
 
