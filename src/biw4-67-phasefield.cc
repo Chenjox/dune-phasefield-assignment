@@ -17,7 +17,9 @@
 #include <dune/functions/gridfunctions/discreteglobalbasisfunction.hh>
 #include <dune/functions/gridfunctions/gridviewfunction.hh>
 #include <dune/geometry/quadraturerules.hh>
+#include <dune/grid/io/file/gmshreader.hh>
 #include <dune/grid/io/file/vtk/subsamplingvtkwriter.hh>
+#include <dune/grid/uggrid.hh>
 #include <dune/grid/yaspgrid.hh>
 #include <dune/istl/bcrsmatrix.hh>
 #include <dune/istl/matrix.hh>
@@ -392,12 +394,16 @@ int main(int argc, char *argv[]) {
   // Generate the grid
   ///////////////////////////////////
   constexpr int dim = 2;
-  using Grid = YaspGrid<dim>;
-  FieldVector<double, dim> upperRight = {1, 1};
-  std::array<int, dim> nElements = {5, 5};
-  Grid grid(upperRight, nElements);
+  // using Grid = YaspGrid<dim>;
+  // FieldVector<double, dim> upperRight = {1, 1};
+  // std::array<int, dim> nElements = {5, 5};
+  // Grid grid(upperRight, nElements);
+
+  using Grid = UGGrid<dim>;
+  std::shared_ptr<Grid> grid = GmshReader<Grid>::read("mode1slit.msh");
+
   using GridView = typename Grid::LeafGridView;
-  GridView gridView = grid.leafGridView();
+  GridView gridView = grid->leafGridView();
   /////////////////////////////////////////////////////////
   // Choose a finite element space
   /////////////////////////////////////////////////////////

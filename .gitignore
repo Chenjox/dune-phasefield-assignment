@@ -5,7 +5,8 @@
 *~
 
 # Geometry data
-*.geo
+*.msh
+*.msh4
 
 compile_commands.json
 
