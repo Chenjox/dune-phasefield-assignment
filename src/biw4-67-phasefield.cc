@@ -29,12 +29,13 @@
 using namespace Dune;
 
 template <class LocalView, class LocalDispFunctionView,
-          class LocalPhaseFunctionView, class Material>
+          class LocalPhaseFunctionView, class Material, class ResidualVector>
 void assembleElementStiffnessMatrix(
     const LocalView &localView, //
     const LocalDispFunctionView &localDispFunction, //
     const LocalPhaseFunctionView &localPhaseFunction, //
     Matrix<double> &elementMatrix, //
+    ResidualVector &elementResidualVector,
     const Material &material
     ) {
 
@@ -45,6 +46,9 @@ void assembleElementStiffnessMatrix(
 
   elementMatrix.setSize(localView.size(), localView.size());
   elementMatrix = 0;
+  elementResidualVector.resize(localView.size());
+  elementResidualVector = 0;
+  
 
   using namespace Indices;
   const auto &displacementLocalFiniteElement =
@@ -140,7 +144,6 @@ void assembleElementStiffnessMatrix(
     ///////////////////////////////////////////////////////////////////////
     // Displacements--Displacements coupling
     ///////////////////////////////////////////////////////////////////////
-    // TODO degradation
     double degradation = material.degradationFunction(phasefieldFunctionValue);
     // Compute the actual matrix entries
     // \int g(\phi) * C(\Delta \eps) : \virt \eps \diff \Omega
@@ -179,7 +182,15 @@ void assembleElementStiffnessMatrix(
         for (size_t j = 0; j < phasefieldLocalFiniteElement.size(); j++) {
           size_t vIndex = localView.tree().child(_0, k).localIndex(i);
           size_t pIndex = localView.tree().child(_1).localIndex(j);
-          auto value = - 2.0* (1.0 - phasefieldFunctionValue) * phaseFieldValue[j] * weight *
+          auto strains = deltaLinStrain[vIndex][i];
+
+          double froeb = 0.0;
+          for (int l = 0; l < dim; l++)
+            for (int o = 0; o < dim; o++) {
+              froeb += strains[l][o] * stresses[l][o];
+            }
+
+          auto value = - 2.0* (1.0 - phasefieldFunctionValue) * phaseFieldValue[j] *froeb * weight *
                        integrationElement;
           elementMatrix[vIndex][pIndex] += value;
           elementMatrix[pIndex][vIndex] += value;
@@ -262,11 +273,12 @@ decltype(auto) matrixEntry(Matrix &matrix, const MultiIndex &row,
 
 // Assemble the Laplace stiffness matrix on the given grid view
 template <class Basis, class displacementFunction, class phasefieldFunction,
-          class Matrix>
+          class Matrix, class VectorBackend>
 void assemblePhasefieldMatrix(const Basis &basis,
                               const displacementFunction &dispFunction,
                               const phasefieldFunction &phaseFieldFunction,
-                              Matrix &matrix) {
+                              Matrix &matrix,
+                              VectorBackend &vectorBackend) {
   // Set all entries to zero
   matrix = 0;
   // A view on the FE basis on a single element
@@ -286,7 +298,7 @@ void assemblePhasefieldMatrix(const Basis &basis,
     Dune::BlockVector<double> elementResidualVector;
     assembleElementStiffnessMatrix(localView, localDispFunctionView,
                                    localPhaseFunctionView, elementMatrix,
-                                   material);
+                                   elementResidualVector, material);
     // Add element stiffness matrix onto the global stiffness matrix
     for (size_t i = 0; i < elementMatrix.N(); i++) {
       // The global index of the i-th local degree of freedom
@@ -298,6 +310,7 @@ void assemblePhasefieldMatrix(const Basis &basis,
         auto col = localView.index(j);
         matrixEntry(matrix, row, col) += elementMatrix[i][j];
       }
+      vectorBackend[row] += elementResidualVector[i];
     }
     // { accumulate_global_matrix_end }
   }
@@ -373,7 +386,7 @@ int main(int argc, char *argv[]) {
 
   
   assemblePhasefieldMatrix(dispPhase, displacementFunction, phasefieldFunction,
-                           stiffnessMatrix);
+                           stiffnessMatrix,rhsBackend);
   /////////////////////////////////////////////////////////
   // Set Dirichlet values.
   // Only velocity components have Dirichlet boundary values
