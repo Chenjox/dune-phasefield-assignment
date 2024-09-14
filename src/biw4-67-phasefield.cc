@@ -84,15 +84,15 @@ void assembleElementStiffnessMatrix(
       }
     }
 
-    double undamagedEnergy = material.strainEnergyDensity(currentStrains);
+    double undegradedEnergy = material.strainEnergyDensity(currentStrains);
     material.stresses(currentStrains, currentStresses);
 
     double degradation = material.degradationFunction(phasefieldFunctionValue);
 
-    // std::cout << "Current undamaged Energy " << undamagedEnergy << std::endl;
-    // std::cout << "Current degradation " << degradation << std::endl;
-    // std::cout << "Current strains " << std::endl << currentStrains <<
-    // std::endl; std::cout << "Current stresses " << std::endl
+    // std::cout << "Current undamaged Energy " << undegradedEnergy <<
+    // std::endl; std::cout << "Current degradation " << degradation <<
+    // std::endl; std::cout << "Current strains " << std::endl << currentStrains
+    // << std::endl; std::endl; std::cout << "Current stresses " << std::endl
     //           << currentStresses << std::endl;
 
     // std::cout << material._regularisationParameter << std::endl;
@@ -111,8 +111,10 @@ void assembleElementStiffnessMatrix(
         position, referenceGradients);
     // Compute the shape function gradients on the grid element
     std::vector<FieldVector<double, dim>> gradients(referenceGradients.size());
-    for (size_t i = 0; i < gradients.size(); i++)
-      jacobianInverseTransposed.mv(referenceGradients[i][0], gradients[i]);
+    for (size_t i = 0; i < gradients.size(); i++) {
+      gradients[i] = 0.0;
+      jacobianInverseTransposed.umv(referenceGradients[i][0], gradients[i]);
+    }
 
     std::vector<std::array<FieldMatrix<double, dim, dim>, dim>> virtualStrains(
         num_nodes);
@@ -122,9 +124,6 @@ void assembleElementStiffnessMatrix(
         //
         FieldMatrix<double, dim, dim> displacementGradiente(0);
         displacementGradiente[k] = gradients[i];
-        // elementMatrix[row][col] += ( gradients[i] * gradients[j] )*
-        // quadPoint.weight() * integrationElement;
-
         FieldMatrix<double, dim, dim> linearisedStrains(0);
 
         for (int k = 0; k < dim; k++) {
@@ -133,7 +132,7 @@ void assembleElementStiffnessMatrix(
                                              displacementGradiente[l][k]);
           }
         }
-        // std::cout << linearisedStrains << std::endl;
+        std::cout << linearisedStrains << std::endl;
 
         virtualStrains[i][k] = linearisedStrains;
       }
@@ -224,7 +223,7 @@ void assembleElementStiffnessMatrix(
         size_t pIndex = localView.tree().child(_1).localIndex(j);
         //
         auto valueFirst = 2.0 * phaseFieldValue[i][0] * phaseFieldValue[j][0] *
-                          undamagedEnergy;
+                          undegradedEnergy;
         auto scalarproduct = phaseFieldGradients[i] * phaseFieldGradients[j];
 
         auto valueSecond = phaseFieldValue[i][0] * phaseFieldValue[j][0] +
@@ -251,10 +250,11 @@ void assembleElementStiffnessMatrix(
             froeb += strains[l][o] * currentStresses[l][o];
           }
 
-        elementResidualVector[dofIndex] +=
+        elementResidualVector[dofIndex] -=
             degradation * froeb * weight * integrationElement;
       }
     }
+    // std::cout << elementResidualVector << std::endl;
 
     ////////////////////////////////////////////
     // Phasefield Dof Residual
@@ -265,7 +265,7 @@ void assembleElementStiffnessMatrix(
 
       // -2.0*(1 - phi)\psi_0 \vdiff psi
       double firstIntegral = -2.0 * (1.0 - phasefieldFunctionValue) *
-                             undamagedEnergy * phaseFieldValue[i];
+                             undegradedEnergy * phaseFieldValue[i];
 
       // -
       double secondValue =
@@ -276,7 +276,7 @@ void assembleElementStiffnessMatrix(
 
       double secondIntegral = gc * (secondValue + thirdValue);
 
-      elementResidualVector[dofIndex] +=
+      elementResidualVector[dofIndex] -=
           (firstIntegral + secondIntegral) * weight * integrationElement;
     }
   }
@@ -356,7 +356,12 @@ void assemblePhasefieldMatrix(const Basis &basis,
   auto localDispFunctionView = localFunction(dispFunction);
   auto localPhaseFunctionView = localFunction(phaseFieldFunction);
   // A loop over all elements of the grid
-  auto material = Dune::Biw467::material<2>(0.01, 100.0, 200.0, 0.1);
+  // 100 0.3 0.01 0.1
+  double emod = 100;
+  double poisson = 0.3;
+  double lambda = emod * poisson / ((1.0 + poisson) * (1.0 - poisson));
+  double shear = emod / (2.0 * (1.0 + poisson));
+  auto material = Dune::Biw467::material<2>(0.01, shear, lambda, 0.1);
   for (const auto &element : elements(basis.gridView())) {
     // Bind the local FE basis view to the current element
     localView.bind(element);
@@ -399,7 +404,7 @@ int main(int argc, char *argv[]) {
   // Grid grid(upperRight, nElements);
 
   using Grid = UGGrid<dim>;
-  std::shared_ptr<Grid> grid = GmshReader<Grid>::read("mode1slit.msh");
+  std::shared_ptr<Grid> grid = GmshReader<Grid>::read("patchC.msh");
 
   using GridView = typename Grid::LeafGridView;
   GridView gridView = grid->leafGridView();
@@ -478,7 +483,7 @@ int main(int argc, char *argv[]) {
   for (auto &&b0i : isBoundary[_0])
     for (std::size_t j = 0; j < b0i.size(); ++j)
       b0i[j] = false;
-  std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), false);
+  std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), true);
 
   auto &&iden = [](Coordinate x) { return DisplacementRange{x[0], x[1]}; };
 
@@ -504,21 +509,22 @@ int main(int argc, char *argv[]) {
 
   auto &&g = [](Coordinate x) {
     if (std::abs(x[1] + 1.0) < 1e-8) {
-      return DisplacementRange{0.0, -0.01};
+      return DisplacementRange{0.0, -0.001};
     }
     if (std::abs(x[1] - 1.0) < 1e-8) {
-      return DisplacementRange{0.0, 0.01};
+      return DisplacementRange{0.0, 0.001};
     }
     return DisplacementRange{0.0, 0.0};
   };
   Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
                          isBoundary);
 
-  int constexpr MAX_ITER = 5;
+  int constexpr MAX_ITER = 1;
   int iter_num = 0;
   do {
 
     rhs = 0;
+    solInkrement = 0;
 
     assemblePhasefieldMatrix(dispPhase, displacementFunction,
                              phasefieldFunction, stiffnessMatrix, rhsBackend);
@@ -527,9 +533,13 @@ int main(int argc, char *argv[]) {
     // Modify Dirichlet rows
     ////////////////////////////////////////////
 
-    // stiffnessMatrix.umv(sol, rhs);
+    std::cout << rhs << std::endl;
 
-    // std::cout << rhs << std::endl;
+    stiffnessMatrix.mmv(sol, rhs);
+
+    // rhs *= -1.0;
+
+    std::cout << rhs << std::endl;
 
     auto localView = dispPhase.localView();
     for (const auto &element : elements(gridView)) {
@@ -556,19 +566,16 @@ int main(int argc, char *argv[]) {
     // Turn the matrix into a linear operator
     MatrixAdapter<Matrix, Vector, Vector> stiffnessOperator(stiffnessMatrix);
     // Fancy (but only) way to not have a preconditioner at all
-    Richardson<Vector, Vector> preconditioner(0.8);
+    Richardson<Vector, Vector> preconditioner(0.7);
     // Construct the iterative solver
-    RestartedGMResSolver<Vector> solver(stiffnessOperator, // Operator to invert
-                                        preconditioner,
-                                        // Preconditioner
-                                        1e-10,
-                                        // Desired residual reduction factor
-                                        500,
-                                        // Number of iterations between
-                                        // restarts, here: no restarting
-                                        500,
-                                        // Maximum number of iterations
-                                        1);
+    MINRESSolver<Vector> solver(stiffnessOperator, // Operator to invert
+                                preconditioner,
+                                // Preconditioner
+                                1e-10,
+                                // Desired residual reduction factor
+                                1000,
+                                // restarts, here: no restarting
+                                1);
     // Verbosity of the solver
     // Object storing some statistics about the solving process
     InverseOperatorResult statistics;
@@ -594,7 +601,7 @@ int main(int argc, char *argv[]) {
 
   vtkWriter.addVertexData(
       displacementFunction,
-      VTK::FieldInfo("displacments", VTK::FieldInfo::Type::vector, dim));
+      VTK::FieldInfo("displacements", VTK::FieldInfo::Type::vector, dim));
   vtkWriter.addVertexData(
       phasefieldFunction,
       VTK::FieldInfo("phasefield", VTK::FieldInfo::Type::scalar, 1));

@@ -40,10 +40,14 @@ namespace Dune {
             double strainEnergyDensity(const Dune::FieldMatrix<field_type, dim, dim>& strains) const {
                 
                 double trace = 0.0;
+                double traceE2 = 0.0;
                 for (int i = 0; i <dim; i++) {
                     trace += strains[i][i];
+                    for (int j = 0; j < dim; j++) {
+                        traceE2 += strains[i][j] * strains[j][i];
+                    }
                 }
-                double traceE2 = strains.frobenius_norm2();
+                
 
                 return _shearModulus*traceE2 + 0.5*_firstLameConstant*trace*trace;
             }
@@ -55,10 +59,10 @@ namespace Dune {
                     trace += strains[i][i];
                 }
                 for (int i = 0; i < dim; i++) {
+                    stresses[i][i] +=  _firstLameConstant * trace;
                     for (int j; j < dim; j++) {
                         stresses[i][j] += 2.0 * _shearModulus * strains[i][j];
                     }
-                    stresses[i][i] +=  _firstLameConstant * trace;
                 }
             }
 
