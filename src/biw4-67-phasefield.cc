@@ -65,11 +65,20 @@ void assembleElementStiffnessMatrix(
   auto phaseDerivative = derivative(localPhaseFunction);
   // Loop over all quadrature points
   for (auto [position, weight] : quad) {
+
+    // std::cout << "Quad Point: " << position << std::endl;
+
     const auto jacobianInverseTransposed =
         geometry.jacobianInverseTransposed(position);
     // The multiplicative factor in the integral transformation formula
     const auto integrationElement = geometry.integrationElement(position);
 
+    /*
+    std::cout << "Geometry Jacobian" << std::endl
+              << jacobianInverseTransposed << std::endl;
+    std::cout << "Geometry Jacobian Determinant" << std::endl
+              << integrationElement << std::endl;
+    */
     // calculate relevant function values
     auto phasefieldFunctionValue = localPhaseFunction(position);
     auto phaseFieldFunctionDerivative = phaseDerivative(position);
@@ -89,16 +98,17 @@ void assembleElementStiffnessMatrix(
 
     double degradation = material.degradationFunction(phasefieldFunctionValue);
 
-    // std::cout << "Current undamaged Energy " << undegradedEnergy <<
-    // std::endl; std::cout << "Current degradation " << degradation <<
-    // std::endl; std::cout << "Current strains " << std::endl << currentStrains
-    // << std::endl; std::endl; std::cout << "Current stresses " << std::endl
-    //           << currentStresses << std::endl;
+    /*
+    std::cout << "Current undamaged Energy " << undegradedEnergy << std::endl;
+    std::cout << "Current degradation " << degradation << std::endl;
+    std::cout << "Current strains " << std::endl << currentStrains << std::endl;
+    std::cout << "Current stresses " << std::endl
+              << currentStresses << std::endl;
 
-    // std::cout << material._regularisationParameter << std::endl;
-    // std::cout << material._griffithReleaseRate << std::endl;
-    // std::cout << material._shearModulus << std::endl;
-
+    std::cout << material._regularisationParameter << std::endl;
+    std::cout << material._griffithReleaseRate << std::endl;
+    std::cout << material._shearModulus << std::endl;
+    */
     double l = material._regularisationParameter;
     double gc = material._griffithReleaseRate;
 
@@ -126,14 +136,16 @@ void assembleElementStiffnessMatrix(
         displacementGradiente[k] = gradients[i];
         FieldMatrix<double, dim, dim> linearisedStrains(0);
 
-        for (int k = 0; k < dim; k++) {
+        for (int j = 0; j < dim; j++) {
           for (int l = 0; l < dim; l++) {
-            linearisedStrains[k][l] = 0.5 * (displacementGradiente[k][l] +
-                                             displacementGradiente[l][k]);
+            linearisedStrains[j][l] = 0.5 * (displacementGradiente[j][l] +
+                                             displacementGradiente[l][j]);
           }
         }
-        std::cout << linearisedStrains << std::endl;
-
+        /*
+        std::cout << "Strain for [" << i << "," << k << "] " << std::endl
+                  << linearisedStrains << std::endl;
+        */
         virtualStrains[i][k] = linearisedStrains;
       }
     }
@@ -242,14 +254,14 @@ void assembleElementStiffnessMatrix(
     for (size_t i = 0; i < displacementLocalFiniteElement.size(); i++) {
       for (size_t k = 0; k < dim; k++) {
         size_t dofIndex = localView.tree().child(_0, k).localIndex(i);
-        auto strains = virtualStrains[k][i];
+        auto strains = virtualStrains[i][k];
 
         double froeb = 0.0;
         for (int l = 0; l < dim; l++)
           for (int o = 0; o < dim; o++) {
             froeb += strains[l][o] * currentStresses[l][o];
           }
-
+        // std::cout << "[" << i << "," << k << "] = " << dofIndex << std::endl;
         elementResidualVector[dofIndex] -=
             degradation * froeb * weight * integrationElement;
       }
@@ -280,15 +292,16 @@ void assembleElementStiffnessMatrix(
           (firstIntegral + secondIntegral) * weight * integrationElement;
     }
   }
-  // std::cout << elementResidualVector << std::endl;
   /*
-  for (int i = 0; i < elementMatrix.M(); i++) {
-    for (int j = 0; j < elementMatrix.N(); j++) {
+  for (size_t i = 0; i < elementMatrix.M(); i++) {
+    for (size_t j = 0; j < elementMatrix.N(); j++) {
       std::cout << elementMatrix[i][j] << " ";
     }
     std::cout << std::endl;
   }
   std::cout << std::endl;
+
+  std::cout << elementResidualVector << std::endl;
   */
 }
 
@@ -385,6 +398,7 @@ void assemblePhasefieldMatrix(const Basis &basis,
         auto col = localView.index(j);
         matrixEntry(matrix, row, col) += elementMatrix[i][j];
       }
+      // std::cout << "Multiindex " << row << " into " << i << std::endl;
       vectorBackend[row] += elementResidualVector[i];
     }
     // { accumulate_global_matrix_end }
@@ -400,12 +414,11 @@ int main(int argc, char *argv[]) {
   constexpr int dim = 2;
   // using Grid = YaspGrid<dim>;
   // FieldVector<double, dim> upperRight = {1, 1};
-  // std::array<int, dim> nElements = {5, 5};
+  // std::array<int, dim> nElements = {2, 2};
   // Grid grid(upperRight, nElements);
 
   using Grid = UGGrid<dim>;
-  std::shared_ptr<Grid> grid = GmshReader<Grid>::read("patchC.msh");
-
+  std::shared_ptr<Grid> grid = GmshReader<Grid>::read("mode1slit.msh");
   using GridView = typename Grid::LeafGridView;
   GridView gridView = grid->leafGridView();
   /////////////////////////////////////////////////////////
@@ -453,6 +466,8 @@ int main(int argc, char *argv[]) {
   positions = rhs;
   auto positionsBackend = Functions::istlVectorBackend(positions);
 
+  Vector initialDirich = rhs;
+  initialDirich = 0;
   sol = 0;
   solInkrement = 0;
 
@@ -483,7 +498,7 @@ int main(int argc, char *argv[]) {
   for (auto &&b0i : isBoundary[_0])
     for (std::size_t j = 0; j < b0i.size(); ++j)
       b0i[j] = false;
-  std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), true);
+  std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), false);
 
   auto &&iden = [](Coordinate x) { return DisplacementRange{x[0], x[1]}; };
 
@@ -498,13 +513,20 @@ int main(int argc, char *argv[]) {
   Functions::forEachBoundaryDOF(
       Functions::subspaceBasis(dispPhase, _0), [&](auto &&index) {
         auto position = positions[_0][index[1]];
-        if (std::abs(position[1] - 1.0) < 1e-8)
+        auto dir = index[2];
+        if (std::abs(position[1] - 1.0) < 1e-8 && dir == 1) {
+          // std::cout << "Firing 1 =" << position << std::endl;
           isBoundaryBackend[index] = true; // unterer Rand
-        if (std::abs(position[1] + 1.0) < 1e-8)
+        }
+        if (std::abs(position[1] + 1.0) < 1e-8 && dir == 1) {
+          // std::cout << "Firing 2 =" << position << std::endl;
           isBoundaryBackend[index] = true; // oberer Rand
+        }
         if (std::abs(position[1] + 1.0) < 1e-8 &&
-            std::abs(position[0] + 1.0) < 1e-8)
+            std::abs(position[0] + 1.0) < 1e-8 && dir == 0) {
+          // std::cout << "Firing 3 =" << position << std::endl;
           isBoundaryBackend[index] = true; // Ecke
+        }
       });
 
   auto &&g = [](Coordinate x) {
@@ -519,7 +541,10 @@ int main(int argc, char *argv[]) {
   Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
                          isBoundary);
 
-  int constexpr MAX_ITER = 1;
+  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), initialDirich,
+                         g, isBoundary);
+
+  int constexpr MAX_ITER = 100;
   int iter_num = 0;
   do {
 
@@ -533,13 +558,7 @@ int main(int argc, char *argv[]) {
     // Modify Dirichlet rows
     ////////////////////////////////////////////
 
-    std::cout << rhs << std::endl;
-
-    stiffnessMatrix.mmv(sol, rhs);
-
-    // rhs *= -1.0;
-
-    std::cout << rhs << std::endl;
+    // std::cout << rhs << std::endl;
 
     auto localView = dispPhase.localView();
     for (const auto &element : elements(gridView)) {
@@ -557,6 +576,8 @@ int main(int argc, char *argv[]) {
         }
       }
     }
+
+    // std::cout << rhs << std::endl;
 
     ////////////////////////////
     // Compute solution
@@ -589,7 +610,7 @@ int main(int argc, char *argv[]) {
     std::cout << "Residual Norm: " << rhs.two_norm() << std::endl;
 
     iter_num++;
-  } while (rhs.two_norm() < 1e-10 || MAX_ITER > iter_num);
+  } while (rhs.two_norm() > 1e-15 || MAX_ITER > iter_num);
 
   //////////////////////////////////////////////////////////////////////////////////////////////
   // Write result to VTK file
@@ -602,6 +623,13 @@ int main(int argc, char *argv[]) {
   vtkWriter.addVertexData(
       displacementFunction,
       VTK::FieldInfo("displacements", VTK::FieldInfo::Type::vector, dim));
+
+  // auto dirich =
+  // Functions::makeDiscreteGlobalBasisFunction<DisplacementRange>(
+  //     displacementBasis, initialDirich);
+  // vtkWriter.addVertexData(
+  //     dirich, VTK::FieldInfo("dirichlet", VTK::FieldInfo::Type::vector,
+  //     dim));
   vtkWriter.addVertexData(
       phasefieldFunction,
       VTK::FieldInfo("phasefield", VTK::FieldInfo::Type::scalar, 1));
