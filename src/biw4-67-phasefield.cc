@@ -206,7 +206,7 @@ void assembleElementStiffnessMatrix(
         for (size_t j = 0; j < phasefieldLocalFiniteElement.size(); j++) {
           size_t vIndex = localView.tree().child(_0, k).localIndex(i);
           size_t pIndex = localView.tree().child(_1).localIndex(j);
-          auto strains = virtualStrains[k][i];
+          auto strains = virtualStrains[i][k];
 
           double froeb = 0.0;
           for (int l = 0; l < dim; l++)
@@ -277,11 +277,11 @@ void assembleElementStiffnessMatrix(
 
       // -2.0*(1 - phi)\psi_0 \vdiff psi
       double firstIntegral = -2.0 * (1.0 - phasefieldFunctionValue) *
-                             undegradedEnergy * phaseFieldValue[i];
+                             undegradedEnergy * phaseFieldValue[i][0];
 
       // -
       double secondValue =
-          1.0 / l * phasefieldFunctionValue * phaseFieldValue[i];
+          1.0 / l * phasefieldFunctionValue * phaseFieldValue[i][0];
 
       double thirdValue =
           l * (phaseFieldFunctionDerivative * phaseFieldGradients[i]);
@@ -529,109 +529,162 @@ int main(int argc, char *argv[]) {
         }
       });
 
-  auto &&g = [](Coordinate x) {
-    if (std::abs(x[1] + 1.0) < 1e-8) {
-      return DisplacementRange{0.0, -0.001};
-    }
-    if (std::abs(x[1] - 1.0) < 1e-8) {
-      return DisplacementRange{0.0, 0.001};
-    }
-    return DisplacementRange{0.0, 0.0};
-  };
-  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
-                         isBoundary);
-
-  Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), initialDirich,
-                         g, isBoundary);
-
-  int constexpr MAX_ITER = 100;
-  int iter_num = 0;
+  // Homotopy Loop
+  double inkre = 0.001;
+  size_t MAX_ITER_HOMOTOPY = 2000;
+  size_t iter_homotopy = 0;
+  double current_step = 0.0;
   do {
 
-    rhs = 0;
-    solInkrement = 0;
+    current_step += inkre;
 
+    auto &&g = [&current_step](Coordinate x) {
+      if (std::abs(x[1] + 1.0) < 1e-8) {
+        return DisplacementRange{0.0, -current_step};
+      }
+      if (std::abs(x[1] - 1.0) < 1e-8) {
+        return DisplacementRange{0.0, current_step};
+      }
+      return DisplacementRange{0.0, 0.0};
+    };
+    Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
+                           isBoundary);
+
+    Functions::interpolate(Functions::subspaceBasis(dispPhase, _0),
+                           initialDirich, g, isBoundary);
+
+    int constexpr MAX_ITER = 100;
+    int iter_num = 0;
+    do {
+
+      rhs = 0;
+      solInkrement = 0;
+
+      assemblePhasefieldMatrix(dispPhase, displacementFunction,
+                               phasefieldFunction, stiffnessMatrix, rhsBackend);
+
+      ////////////////////////////////////////////
+      // Modify Dirichlet rows
+      ////////////////////////////////////////////
+
+      // std::cout << rhs << std::endl;
+
+      auto localView = dispPhase.localView();
+      for (const auto &element : elements(gridView)) {
+        localView.bind(element);
+        for (size_t i = 0; i < localView.size(); ++i) {
+          auto row = localView.index(i);
+          // If row corresponds to a boundary entry,
+          // modify it to be an identity matrix row.
+          if (isBoundaryBackend[row]) {
+            for (size_t j = 0; j < localView.size(); ++j) {
+              auto col = localView.index(j);
+              matrixEntry(stiffnessMatrix, row, col) = (i == j) ? 1.0 : 0.0;
+            }
+            rhsBackend[row] = 0.0;
+          }
+        }
+      }
+
+      // std::cout << rhs << std::endl;
+
+      ////////////////////////////
+      // Compute solution
+      ////////////////////////////
+      // Initial iterate: Start from the rhs vector,
+      // that way the Dirichlet entries are already correct.
+      // Turn the matrix into a linear operator
+      MatrixAdapter<Matrix, Vector, Vector> stiffnessOperator(stiffnessMatrix);
+      // Fancy (but only) way to not have a preconditioner at all
+      Richardson<Vector, Vector> preconditioner(0.8);
+      // Construct the iterative solver
+      MINRESSolver<Vector> solver(stiffnessOperator, // Operator to invert
+                                  preconditioner,
+                                  // Preconditioner
+                                  1e-15,
+                                  // Desired residual reduction factor
+                                  5000,
+                                  // restarts, here: no restarting
+                                  0);
+      // Verbosity of the solver
+      // Object storing some statistics about the solving process
+      InverseOperatorResult statistics;
+      // Solve!
+
+      solver.apply(solInkrement, rhs, statistics);
+
+      sol += solInkrement;
+
+      // std::cout << "Solution Norm: " << sol.two_norm() << std::endl;
+      // std::cout << "Residual Norm: " << rhs.two_norm() << std::endl;
+
+      iter_num++;
+    } while (rhs.two_norm() > 1e-15 && MAX_ITER > iter_num);
+
+    /////////////
+    // Bare minimum of post processing
+    /////////////
+
+    // Get current full matrix
     assemblePhasefieldMatrix(dispPhase, displacementFunction,
                              phasefieldFunction, stiffnessMatrix, rhsBackend);
-
-    ////////////////////////////////////////////
-    // Modify Dirichlet rows
-    ////////////////////////////////////////////
-
-    // std::cout << rhs << std::endl;
-
+    // calculate reaction forces
+    stiffnessMatrix.mv(sol, rhs);
     auto localView = dispPhase.localView();
     for (const auto &element : elements(gridView)) {
       localView.bind(element);
       for (size_t i = 0; i < localView.size(); ++i) {
         auto row = localView.index(i);
-        // If row corresponds to a boundary entry,
-        // modify it to be an identity matrix row.
-        if (isBoundaryBackend[row]) {
-          for (size_t j = 0; j < localView.size(); ++j) {
-            auto col = localView.index(j);
-            matrixEntry(stiffnessMatrix, row, col) = (i == j) ? 1.0 : 0.0;
-          }
+        // If it isn't boundary, set DOF to zero
+        if (!isBoundaryBackend[row]) {
           rhsBackend[row] = 0.0;
         }
       }
     }
+    // Now iterate through the whole vector
+    // check count for current index
+    size_t count = 0;
+    size_t num_reaction_nodes = 0;
+    double upperReactions = 0.0;
+    double lowerReactions = 0.0;
+    for (auto &entry : rhs[_0]) {
+      auto position = positions[_0][count];
 
-    // std::cout << rhs << std::endl;
+      // obere kante
+      if (std::abs(position[1] - 1.0) < 1e-8) {
+        upperReactions += entry[1];
+        num_reaction_nodes += 1;
+      }
+      // untere kante
+      if (std::abs(position[1] + 1.0) < 1e-8) {
+        lowerReactions += entry[1];
+      }
+      count++;
+    }
+    // Get average reaction forces
+    double upperAverage = upperReactions / double(num_reaction_nodes);
+    double lowerAverage = lowerReactions / double(num_reaction_nodes);
 
-    ////////////////////////////
-    // Compute solution
-    ////////////////////////////
-    // Initial iterate: Start from the rhs vector,
-    // that way the Dirichlet entries are already correct.
-    // Turn the matrix into a linear operator
-    MatrixAdapter<Matrix, Vector, Vector> stiffnessOperator(stiffnessMatrix);
-    // Fancy (but only) way to not have a preconditioner at all
-    Richardson<Vector, Vector> preconditioner(0.7);
-    // Construct the iterative solver
-    MINRESSolver<Vector> solver(stiffnessOperator, // Operator to invert
-                                preconditioner,
-                                // Preconditioner
-                                1e-10,
-                                // Desired residual reduction factor
-                                1000,
-                                // restarts, here: no restarting
-                                1);
-    // Verbosity of the solver
-    // Object storing some statistics about the solving process
-    InverseOperatorResult statistics;
-    // Solve!
+    std::cout << "R: " << current_step << "," << upperAverage << ","
+              << lowerAverage << std::endl;
 
-    solver.apply(solInkrement, rhs, statistics);
+    //////////////////////////////////////////////////////////////////////////////////////////////
+    // Write result to VTK file
+    // We need to subsample, because the dune-grid VTKWriter cannot natively
+    // display second-order functions
+    //////////////////////////////////////////////////////////////////////////////////////////////
 
-    sol += solInkrement;
+    SubsamplingVTKWriter<GridView> vtkWriter(gridView, refinementLevels(0));
 
-    std::cout << "Solution Norm: " << sol.two_norm() << std::endl;
-    std::cout << "Residual Norm: " << rhs.two_norm() << std::endl;
+    vtkWriter.addVertexData(
+        displacementFunction,
+        VTK::FieldInfo("displacements", VTK::FieldInfo::Type::vector, dim));
 
-    iter_num++;
-  } while (rhs.two_norm() > 1e-15 || MAX_ITER > iter_num);
+    vtkWriter.addVertexData(
+        phasefieldFunction,
+        VTK::FieldInfo("phasefield", VTK::FieldInfo::Type::scalar, 1));
+    vtkWriter.write("phasefield-result-" + std::to_string(iter_homotopy));
 
-  //////////////////////////////////////////////////////////////////////////////////////////////
-  // Write result to VTK file
-  // We need to subsample, because the dune-grid VTKWriter cannot natively
-  // display second-order functions
-  //////////////////////////////////////////////////////////////////////////////////////////////
-
-  SubsamplingVTKWriter<GridView> vtkWriter(gridView, refinementLevels(0));
-
-  vtkWriter.addVertexData(
-      displacementFunction,
-      VTK::FieldInfo("displacements", VTK::FieldInfo::Type::vector, dim));
-
-  // auto dirich =
-  // Functions::makeDiscreteGlobalBasisFunction<DisplacementRange>(
-  //     displacementBasis, initialDirich);
-  // vtkWriter.addVertexData(
-  //     dirich, VTK::FieldInfo("dirichlet", VTK::FieldInfo::Type::vector,
-  //     dim));
-  vtkWriter.addVertexData(
-      phasefieldFunction,
-      VTK::FieldInfo("phasefield", VTK::FieldInfo::Type::scalar, 1));
-  vtkWriter.write("phasefield-result");
+    iter_homotopy++;
+  } while (iter_homotopy < MAX_ITER_HOMOTOPY);
 }
