@@ -485,7 +485,7 @@ int main(int argc, char *argv[]) {
 
   /////////////////////////////////////////////////////////
   // Set Dirichlet values.
-  // Only velocity components have Dirichlet boundary values
+  // Only displacement components have Dirichlet boundary values
   /////////////////////////////////////////////////////////
   using DisplacementBitVector = std::vector<std::array<char, dim>>;
   using PhasefieldBitVector = std::vector<char>;
@@ -501,11 +501,6 @@ int main(int argc, char *argv[]) {
   std::fill(isBoundary[_1].begin(), isBoundary[_1].end(), false);
 
   auto &&iden = [](Coordinate x) { return DisplacementRange{x[0], x[1]}; };
-
-  // TODO DIRICHLET!!!!!
-  // 1. What you could do for Lagrange basis is to interpolate the function f(x)
-  // = x into the Lagrange space on the element. The coefficients of this
-  // interpolations then given you the Lagrange node position. 2.
 
   Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), positions,
                          iden);
@@ -549,9 +544,6 @@ int main(int argc, char *argv[]) {
     };
     Functions::interpolate(Functions::subspaceBasis(dispPhase, _0), sol, g,
                            isBoundary);
-
-    Functions::interpolate(Functions::subspaceBasis(dispPhase, _0),
-                           initialDirich, g, isBoundary);
 
     int constexpr MAX_ITER = 100;
     int iter_num = 0;
@@ -599,12 +591,9 @@ int main(int argc, char *argv[]) {
       Richardson<Vector, Vector> preconditioner(0.8);
       // Construct the iterative solver
       MINRESSolver<Vector> solver(stiffnessOperator, // Operator to invert
-                                  preconditioner,
-                                  // Preconditioner
-                                  1e-15,
-                                  // Desired residual reduction factor
-                                  5000,
-                                  // restarts, here: no restarting
+                                  preconditioner,    // Preconditioner
+                                  1e-15, // Desired residual reduction factor
+                                  5000,  // maximum number of iterations
                                   0);
       // Verbosity of the solver
       // Object storing some statistics about the solving process
@@ -626,10 +615,11 @@ int main(int argc, char *argv[]) {
     /////////////
 
     // Get current full matrix
+    rhs = 0;
     assemblePhasefieldMatrix(dispPhase, displacementFunction,
                              phasefieldFunction, stiffnessMatrix, rhsBackend);
     // calculate reaction forces
-    stiffnessMatrix.mv(sol, rhs);
+    // stiffnessMatrix.mv(sol, rhs);
     auto localView = dispPhase.localView();
     for (const auto &element : elements(gridView)) {
       localView.bind(element);
@@ -666,7 +656,7 @@ int main(int argc, char *argv[]) {
     double lowerAverage = lowerReactions / double(num_reaction_nodes);
 
     std::cout << "R: " << current_step << "," << upperAverage << ","
-              << lowerAverage << std::endl;
+              << lowerAverage << "," << iter_num << std::endl;
 
     //////////////////////////////////////////////////////////////////////////////////////////////
     // Write result to VTK file
