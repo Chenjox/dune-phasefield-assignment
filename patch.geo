@@ -2,18 +2,18 @@
 
 width = 1;
 height = 1;
-patchoffset = (width/2)*0.6;
-patchheightset = (height/2)*0.5;
+patchoffset = (width/2)*0.8;
+patchheightset = (height/2)*0.6;
 
 // Zuerst die Punkte
-Point(1) = {0,0,0};
-Point(2) = {width,0,0};
+Point(1) = {-width,-height,0};
+Point(2) = {width,-height,0};
 Point(3) = {width,height,0};
-Point(4) = {0,height,0};
-Point(5) = {patchoffset,patchheightset,0};
-Point(6) = {width-patchheightset,patchoffset,0};
+Point(4) = {-width,height,0};
+Point(5) = {-width+patchoffset,-height+patchheightset,0};
+Point(6) = {width-patchheightset,-height+patchoffset,0};
 Point(7) = {width-patchoffset,height-patchheightset,0};
-Point(8) = {patchheightset,height-patchoffset,0};
+Point(8) = {-width+patchheightset,height-patchoffset,0};
 
 
 // Dann die äußeren Linien
